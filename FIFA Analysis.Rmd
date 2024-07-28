@@ -1,0 +1,437 @@
+---
+title: "Stats351 Final Project"
+author: "Hilena Shekour"
+date: "11/13/2023"
+output:
+  pdf_document: default
+  word_document: default
+header-includes:
+- \usepackage{xcolor}
+- \usepackage{framed}
+---
+
+<!-- STUDENTS: change the "author" above to your name
+DO NOT EDIT THE SECTION BELOW -->
+
+\colorlet{shadecolor}{gray!10}
+
+```{r setup, include=FALSE}
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.width = 5, fig.height = 5)
+library(readr)
+library(ggplot2)
+library(stats)
+
+#install.packages("tidyverse")
+library(tidyverse)
+#install.packages('tinytex')
+library(tinytex)
+library(dplyr)
+#devtools::install_github("kupietz/kableExtra")
+library(kableExtra)
+library(ggcorrplot)
+library(GGally)
+#install.packages("caret")
+library(caret)
+
+```
+
+\newcommand{\answerstart}{ \colorlet{shadecolor}{orange!20}
+\begin{shaded} }
+\newcommand{\answerend}{  \end{shaded} \colorlet{shadecolor}{gray!10}}
+<!-- STUDENTS: DO NOT EDIT THE SECTION ABOVE 
+start here, insert homework below -->
+
+```{r}
+# read the datasets
+players_data <- read_csv("WorldCupPlayers.csv")
+world_cup_matches <- read_csv("WorldCupMatches (1).csv")
+world_cup <- read_csv("WorldCups.csv")
+
+```
+
+
+```{r}
+# Exploratory Analysis 
+
+world_cup_tenyear <- filter(world_cup, Year >= "1978")
+goal_attendance <- 
+  ggplot(data = world_cup_tenyear, aes(x= GoalsScored, y= Attendance, color = as.factor(Year))) + geom_point() +
+
+  labs(title = "World Cup Goals vs Attendance",
+       x = "Goals Scored",
+       y = "Attendance",
+       color = "Year") +
+  theme_minimal()
+goal_attendance
+
+num_goals <- ggplot(data = world_cup, aes(x = as.factor(Year), y = GoalsScored)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  theme_minimal() +
+  labs(title = "Number of Goals Scored per World Cup",
+       x = "Year",
+       y = "Goals Scored") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))  # Rotate x-axis labels
+num_goals
+```
+
+
+```{r}
+# Extracting and cleaning event data
+clean_events <- players_data %>%
+  filter(!is.na(Event)) %>%
+  mutate(Event = strsplit(as.character(Event), " ")) %>%
+  unnest(Event) %>%
+  separate(Event, into = c("EventType", "EventMinute"), sep = "(?<=\\D)(?=\\d)|(?<=\\d)(?=\\D)", extra = "merge") %>%
+  mutate(EventMinute = parse_number(EventMinute))
+
+# Categorizing events
+clean_events <- clean_events %>%
+  mutate(EventCategory = case_when(
+    str_detect(EventType, "^G") ~ "Goal",
+    EventType == "OG" ~ "Own Goal",
+    EventType == "Y" ~ "Yellow Card",
+    EventType == "R" ~ "Red Card",
+    EventType == "SY" ~ "Red Card by Second Yellow",
+    EventType == "P" ~ "Penalty",
+    EventType == "MP" ~ "Missed Penalty",
+    EventType == "I" ~ "Substitution In",
+    EventType == "O" ~ "Substitution Out",
+    TRUE ~ "Other"
+  ))
+
+# Counting events by team and category
+event_counts <- clean_events %>%
+  group_by(`Team Initials`, EventCategory) %>%
+  summarise(Count = n())
+
+dodge_width <- 0.7
+
+
+# Calculate the number of matches for each team
+matches_data <- players_data %>%
+  group_by(`Team Initials`) %>%
+  summarise(Number_of_Matches = n_distinct(MatchID))
+
+# Determine the acceptable range of match counts for comparison
+median_matches <- median(matches_data$Number_of_Matches)
+lower_bound <- median_matches * 0.9 # 10% less than the median
+upper_bound <- median_matches * 1.1 # 10% more than the median
+
+# Filter teams that fall within the acceptable range
+matches_data_filtered <- matches_data %>%
+  filter(Number_of_Matches >= lower_bound & Number_of_Matches <= upper_bound)
+
+
+selected_countries <- c("ALG", "AUS", "GHA", "IRL", "IRN", "KSA", "MAR", "NIR", "TUN")
+
+# Filter the event_counts to only include the selected countries
+event_counts_selected <- event_counts %>%
+  filter(`Team Initials` %in% selected_countries)
+
+# Plotting the data for the selected countries
+ggplot(event_counts_selected, aes(x = `Team Initials`, y = Count, group = EventCategory, fill = EventCategory)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.75)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title = "Frequency of Different Types of Events by Team", x = "Team", y = "Count") +
+  scale_x_discrete(limits = selected_countries) # Order the x-axis based on the selected_countries order
+
+```
+
+```{r}
+
+# Add a column for match outcome from the home team's perspective
+world_cup_matches$HomeTeamResult <- ifelse(world_cup_matches$`Home Team Goals` > world_cup_matches$`Away Team Goals`, 'Win',
+                                           ifelse(world_cup_matches$`Home Team Goals` < world_cup_matches$`Away Team Goals`, 'Loss', 'Draw'))
+
+# Add a column for match outcome from the away team's perspective
+world_cup_matches$AwayTeamResult <- ifelse(world_cup_matches$`Home Team Goals` < world_cup_matches$`Away Team Goals`, 'Win',
+                                           ifelse(world_cup_matches$`Home Team Goals` > world_cup_matches$`Away Team Goals`, 'Loss', 'Draw'))
+
+
+# Aggregate results for Home Teams
+home_team_performance <- world_cup_matches %>%
+  group_by(TeamName = `Home Team Name`) %>%
+  summarise(Wins = sum(HomeTeamResult == "Win"),
+            Losses = sum(HomeTeamResult == "Loss"),
+            Draws = sum(HomeTeamResult == "Draw"))
+
+# Aggregate results for Away Teams
+away_team_performance <- world_cup_matches %>%
+  group_by(TeamName = `Away Team Name`) %>%
+  summarise(Wins = sum(AwayTeamResult == "Win"),
+            Losses = sum(AwayTeamResult == "Loss"),
+            Draws = sum(AwayTeamResult == "Draw"))
+
+# Combine Home and Away Team Performances
+# Ensure that the column names are identical before using rbind
+total_team_performance <- rbind(home_team_performance, away_team_performance) %>%
+  group_by(TeamName) %>%
+  summarise(TotalWins = sum(Wins, na.rm = TRUE),
+            TotalLosses = sum(Losses, na.rm = TRUE),
+            TotalDraws = sum(Draws, na.rm = TRUE))
+
+# View the result
+head(total_team_performance)
+```
+
+```{r}
+
+# Add a column for match outcome from the home team's perspective
+world_cup_matches$HomeTeamResult <- ifelse(world_cup_matches$`Home Team Goals` > world_cup_matches$`Away Team Goals`, 'Win',
+                                           ifelse(world_cup_matches$`Home Team Goals` < world_cup_matches$`Away Team Goals`, 'Loss', 'Draw'))
+
+# Add a column for match outcome from the away team's perspective
+world_cup_matches$AwayTeamResult <- ifelse(world_cup_matches$`Home Team Goals` < world_cup_matches$`Away Team Goals`, 'Win',
+                                           ifelse(world_cup_matches$`Home Team Goals` > world_cup_matches$`Away Team Goals`, 'Loss', 'Draw'))
+
+# Aggregate results for Home Teams with Stage
+home_team_performance_stage <- world_cup_matches %>%
+  group_by(HomeTeamName = `Home Team Name`, Stage) %>%
+  summarise(Wins = sum(HomeTeamResult == "Win"),
+            Losses = sum(HomeTeamResult == "Loss"),
+            Draws = sum(HomeTeamResult == "Draw"))
+
+# Aggregate results for Away Teams with Stage
+away_team_performance_stage <- world_cup_matches %>%
+  group_by(AwayTeamName = `Away Team Name`, Stage) %>%
+  summarise(Wins = sum(AwayTeamResult == "Win"),
+            Losses = sum(AwayTeamResult == "Loss"),
+            Draws = sum(AwayTeamResult == "Draw"))
+
+# Combine Home and Away Team Performances with Stage
+total_team_performance_stage <- rbind(home_team_performance_stage, away_team_performance_stage) %>%
+  group_by(TeamName = coalesce(HomeTeamName, AwayTeamName), Stage) %>%
+  summarise(TotalWins = sum(Wins, na.rm = TRUE),
+            TotalLosses = sum(Losses, na.rm = TRUE),
+            TotalDraws = sum(Draws, na.rm = TRUE))
+
+# View the result
+head(total_team_performance_stage)
+```
+
+```{r}
+# Aggregate results for Home Teams with Year and Stage
+home_team_performance_year_stage <- world_cup_matches %>%
+  group_by(Year, HomeTeamName = `Home Team Name`, Stage) %>%
+  summarise(Wins = sum(HomeTeamResult == "Win"),
+            Losses = sum(HomeTeamResult == "Loss"),
+            Draws = sum(HomeTeamResult == "Draw"))
+
+# Aggregate results for Away Teams with Year and Stage
+away_team_performance_year_stage <- world_cup_matches %>%
+  group_by(Year, AwayTeamName = `Away Team Name`, Stage) %>%
+  summarise(Wins = sum(AwayTeamResult == "Win"),
+            Losses = sum(AwayTeamResult == "Loss"),
+            Draws = sum(AwayTeamResult == "Draw"))
+
+# Combine Home and Away Team Performances with Year and Stage
+total_team_performance_year_stage <- rbind(home_team_performance_year_stage, away_team_performance_year_stage) %>%
+  group_by(Year, Team = coalesce(HomeTeamName, AwayTeamName), Stage) %>%
+  summarise(TotalWins = sum(Wins, na.rm = TRUE),
+            TotalLosses = sum(Losses, na.rm = TRUE),
+            TotalDraws = sum(Draws, na.rm = TRUE))
+
+# View the result
+head(total_team_performance_year_stage)
+```
+```{r}
+# Filter the data for a specific team, e.g., Algeria
+nigeria_performance <- total_team_performance_year_stage %>%
+  filter(Team == "Nigeria")
+
+# Create stacked bar charts
+ggplot(nigeria_performance, aes(x = Year, y = TotalWins, fill = Stage)) +
+  geom_bar(stat = "identity", position = "stack") +
+  theme_minimal() +
+  labs(title = "Nigeria's Performance in World Cup by Year and Stage",
+       x = "Year",
+       y = "Total Wins",
+       fill = "Stage")
+
+# Filter the data for a specific team, e.g., Algeria
+france_performance <- total_team_performance_year_stage %>%
+  filter(Team == "France")
+
+# Create stacked bar charts
+ggplot(france_performance, aes(x = Year, y = TotalWins, fill = Stage)) +
+  geom_bar(stat = "identity", position = "stack") +
+  theme_minimal() +
+  labs(title = "France's Performance in World Cup by Year and Stage",
+       x = "Year",
+       y = "Total Wins",
+       fill = "Stage")
+```
+
+```{r}
+# Add a column for match outcome from the home team's perspective
+world_cup_matches$HomeTeamResult <- ifelse(world_cup_matches$`Home Team Goals` > world_cup_matches$`Away Team Goals`, 'Win',
+                                           ifelse(world_cup_matches$`Home Team Goals` < world_cup_matches$`Away Team Goals`, 'Loss', 'Draw'))
+
+# Add a column for match outcome from the away team's perspective
+world_cup_matches$AwayTeamResult <- ifelse(world_cup_matches$`Home Team Goals` < world_cup_matches$`Away Team Goals`, 'Win',
+                                           ifelse(world_cup_matches$`Home Team Goals` > world_cup_matches$`Away Team Goals`, 'Loss', 'Draw'))
+
+# Aggregate results for Home Teams with Year
+home_team_performance_year <- world_cup_matches %>%
+  group_by(Year, TeamName = `Home Team Name`) %>%
+  summarise(HomeWins = sum(HomeTeamResult == "Win"),
+            HomeLosses = sum(HomeTeamResult == "Loss"),
+            HomeDraws = sum(HomeTeamResult == "Draw"))
+
+# Aggregate results for Away Teams with Year
+away_team_performance_year <- world_cup_matches %>%
+  group_by(Year, TeamName = `Away Team Name`) %>%
+  summarise(AwayWins = sum(AwayTeamResult == "Win"),
+            AwayLosses = sum(AwayTeamResult == "Loss"),
+            AwayDraws = sum(AwayTeamResult == "Draw"))
+
+# Join the home and away data frames with Year
+combined_teams <- merge(home_team_performance_year, away_team_performance_year, by = c("Year", "TeamName"), all = TRUE)
+
+# Replace NA values with 0
+combined_teams[is.na(combined_teams)] <- 0
+
+# Combine the performance metrics with Year
+combined_teams <- combined_teams %>%
+  mutate(TotalWins = HomeWins + AwayWins,
+         TotalLosses = HomeLosses + AwayLosses,
+         TotalDraws = HomeDraws + AwayDraws)
+
+# View the result
+head(combined_teams)
+```
+
+
+
+```{r}
+calculate_points <- function(goals_for, goals_against) {
+  if (goals_for > goals_against) {
+    return(3)  # win
+  } else if (goals_for == goals_against) {
+    return(1)  # draw
+  } else {
+    return(0)  # loss
+  }
+}
+
+group_stage_matches <- world_cup_matches %>%
+  filter(grepl("Group", Stage))
+
+group_stage_matches$HomeTeamPoints <- mapply(calculate_points, group_stage_matches$`Home Team Goals`, group_stage_matches$`Away Team Goals`)
+group_stage_matches$AwayTeamPoints <- mapply(calculate_points, group_stage_matches$`Away Team Goals`, group_stage_matches$`Home Team Goals`)
+
+home_teams <- group_stage_matches %>%
+  group_by(Year, `Home Team Name`) %>%
+  summarise(GoalsFor = sum(`Home Team Goals`), GoalsAgainst = sum(`Away Team Goals`), Points = sum(HomeTeamPoints))
+
+away_teams <- group_stage_matches %>%
+  group_by(Year, `Away Team Name`) %>%
+  summarise(GoalsFor = sum(`Away Team Goals`), GoalsAgainst = sum(`Home Team Goals`), Points = sum(AwayTeamPoints))
+
+combined_teams <- rbind(home_teams, away_teams) %>%
+  group_by(Year, Team = coalesce(`Home Team Name`, `Away Team Name`)) %>%
+  summarise(GoalsFor = sum(GoalsFor), GoalsAgainst = sum(GoalsAgainst), Points = sum(Points))
+
+
+combined_teams <- combined_teams %>%
+    mutate(AvgGoalsScored = GoalsFor / (n() / 2), 
+           AvgGoalsConceded = GoalsAgainst / (n() / 2),
+           GoalDifference = GoalsFor - GoalsAgainst)
+# Isolate 2014 data
+data_2014 <- subset(combined_teams, Year == 2014)
+
+# Prepare features for 2014 data
+data_2014 <- data_2014 %>%
+    mutate(AvgGoalsScored = GoalsFor / (n() / 2), 
+           AvgGoalsConceded = GoalsAgainst / (n() / 2),
+           GoalDifference = GoalsFor - GoalsAgainst)
+
+# Merge code
+unique_team_names <- unique(clean_events$`Team Initials`)
+unique_team_names1 <- unique(combined_teams$Team)
+
+
+
+# Mapping table
+team_mapping <- data.frame(
+  FullTeamName = c("Argentina","Belgium","Bolivia","Brazil","Chile","France","Mexico","Paraguay","Peru","Romania","USA","Uruguay","Yugoslavia","England","Italy","Spain","Sweden","Switzerland","Austria","Czechoslovakia","Germany FR","Hungary","Korea Republic","Scotland","Turkey","Northern Ireland","Soviet Union","Wales","Bulgaria","Colombia","Korea DPR","Portugal","El Salvador",
+"Israel","Morocco","Australia","German DR","Haiti","Netherlands","Poland","Zaire","IR Iran",
+"Tunisia","Algeria","Cameroon","Honduras","Kuwait","New Zealand","Canada","Denmark","Iraq",
+"Costa Rica","Egypt","Republic of Ireland","United Arab Emirates","Germany","Greece","Nigeria",
+"Norway","Russia","Saudi Arabia","Croatia","Jamaica","Japan","South Africa","China PR",
+"Ecuador","Senegal","Slovenia","Angola","Czech Republic","Côte d'Ivoire","Ghana","Togo","Ukraine","Serbia and Montenegro","Trinidad and Tobago","Serbia","Slovakia","Bosnia and Herzegovina"),  # Add all relevant team names
+  `Team Initials` = c("ARG", "BEL", "BOL", "BRA", "CHI", "FRA", "MEX", "PAR", "PER", "ROU", "USA", "URU", "YUG", "ENG", "ITA", "ESP", "SWE", "SUI", "AUT", "TCH", "FRG", "HUN", "KOR", "SCO", "TUR", "NIR", "URS", "WAL", "BUL", "COL", "PRK", "POR", "SLV", "ISR", "MAR", "AUS", "GDR", "HAI", "NED", "POL", "ZAI", "IRN", "TUN", "ALG", "CMR", "HON", "KUW", "NZL", "CAN", "DEN", "IRQ", "CRC", "EGY", "IRL", "UAE", "GER", "GRE", "NGA", "NOR", "RUS", "KSA", "CRO", "JAM", "JPN", "RSA", "CHN", "ECU", "SEN", "SVN", "ANG", "CZE", "CIV", "GHA", "TOG", "UKR", "SCG", "TRI", "SRB", "SVK", "BIH"
+), check.names = FALSE               
+)
+# Merge combined_teams with the team_mapping
+combined_teams <- merge(combined_teams, team_mapping, by.x = "Team", by.y = "FullTeamName", all.x = TRUE)
+# Merge combined_teams_with_discipline with clean_events
+combined_teams_with_discipline <- merge(combined_teams, clean_events, by = "Team Initials")
+
+clean_events <- clean_events %>%
+  mutate(
+    Goal = grepl("G", EventCategory),
+    OwnGoal = grepl("OG", EventCategory),
+    YellowCard = grepl("Y", EventCategory),
+    RedCard = grepl("R", EventCategory),
+    SecondYellowRedCard = grepl("SY", EventCategory),
+    Penalty = grepl("P", EventCategory),
+    MissedPenalty = grepl("MP", EventCategory),
+    SubIn = grepl("I", EventCategory),
+    SubOut = grepl("O", EventCategory)
+  )
+team_event_counts <- clean_events %>%
+  group_by(`Team Initials`) %>%
+  summarise(
+    TotalGoals = sum(Goal),
+    TotalOwnGoals = sum(OwnGoal),
+    TotalYellowCards = sum(YellowCard),
+    TotalRedCards = sum(RedCard),
+    TotalSecondYellowRedCards = sum(SecondYellowRedCard),
+    TotalPenalties = sum(Penalty),
+    TotalMissedPenalties = sum(MissedPenalty),
+    TotalSubIns = sum(SubIn),
+    TotalSubOuts = sum(SubOut)
+  )
+
+combined_teams_with_events <- merge(combined_teams, team_event_counts, by = "Team Initials")
+
+combined_teams_with_events <- combined_teams_with_events %>%
+  mutate(TeamConductScore = -1 * TotalYellowCards - 3 * TotalSecondYellowRedCards - 4 * TotalRedCards)
+
+# If total_team_performance_year_stage contains Year, Team, and Group/Stage information
+combined_teams_with_discipline <- merge(combined_teams_with_events, total_team_performance_year_stage, by = c("Year", "Team"), all.x = TRUE)
+
+group_rankings <- combined_teams_with_discipline %>%
+  group_by(Year, Stage) %>%  # Replace 'Stage' with 'Group' if that's the correct column
+  arrange(desc(Points), desc(GoalDifference), desc(GoalsFor), desc(TeamConductScore)) %>%
+  mutate(Rank = row_number())
+
+# Flag the top two teams as qualified
+group_rankings <- group_rankings %>%
+  mutate(Qualified = ifelse(Rank <= 2, 1, 0))
+
+# Train the model on pre-2014 data
+train_data <- subset(group_rankings, Year < 2014)
+
+model <- glm(Qualified ~ AvgGoalsScored + AvgGoalsConceded + GoalDifference, 
+             data = train_data, 
+             family = binomial())
+data_2014 <- subset(group_rankings, Year == 2014)
+
+qualified_teams_2014 <- c("BRA", "MEX", "NED", "CHI", "COL", "GRE", "CRC", "URU", "FRA", "SUI", "ARG", "NGA", "GER", "USA", "BEL", "ALG")
+data_2014$ActualQualify <- data_2014$`Team Initials` %in% qualified_teams_2014
+data_2014$ActualQualify <- as.numeric(data_2014$ActualQualify)
+
+
+# Predict for 2014 data
+predictions_2014 <- predict(model, data_2014, type = "response")
+data_2014$PredictedQualify <- ifelse(predictions_2014 > 0.5, 1, 0)
+
+# Evaluate the model
+confusionMatrix(as.factor(data_2014$PredictedQualify), as.factor(data_2014$ActualQualify))
+
+
+```
+
